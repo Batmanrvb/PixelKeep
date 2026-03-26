@@ -45,4 +45,3 @@ Only use ROM files for games you legally own. No ROMs are included.
 - [EmulatorJS](https://emulatorjs.org) loaded from CDN — no backend needed!
 - Pure HTML/CSS/JS — works on any static host.
 
-##P.S.
