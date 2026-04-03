@@ -113,6 +113,7 @@ function launchGame(id){
   var game=null;
   for(var i=0;i<library.length;i++){if(library[i].id===id){game=library[i];break;}}
   if(!game) return;
+  if(window.addRecentGame) window.addRecentGame(game);
   var modal=document.getElementById('modal');
   var container=document.getElementById('game-container');
   document.getElementById('modal-title').textContent=game.name;
@@ -128,6 +129,7 @@ function launchGame(id){
   var s=document.createElement('script');s.id='ejs-loader';s.src='https://cdn.emulatorjs.org/latest/data/loader.js';
   document.body.appendChild(s);currentGame={url:url};
 }
+window.launchGameById=launchGame;
 
 function closeModal(){
   var modal=document.getElementById('modal');
@@ -1044,5 +1046,448 @@ renderLibrary();
   buildLevel();
   resetPlayer();
   requestAnimationFrame(loop);
+
+})();
+
+// ══════════════════════════════════════════════
+//  CHIPTUNE MUSIC PLAYER (Web Audio API)
+//  Generates retro 8-bit music procedurally —
+//  no external files needed
+// ══════════════════════════════════════════════
+(function() {
+  var AudioCtx = window.AudioContext || window.webkitAudioContext;
+  if (!AudioCtx) return;
+
+  var ctx = null;
+  var masterGain = null;
+  var isPlaying = false;
+  var currentTrack = 0;
+  var schedulerTimer = null;
+  var nextNoteTime = 0;
+  var currentStep = 0;
+  var currentBar  = 0;
+  var tempo = 140; // BPM
+  var scheduleAhead = 0.1;
+  var intervalMs    = 25;
+  var activeNodes   = [];
+
+  // ── Tracks ─────────────────────────────────
+  // Notes as frequencies. 0 = rest.
+  var NOTE = {
+    C3:130.81, D3:146.83, E3:164.81, F3:174.61, G3:196, A3:220, B3:246.94,
+    C4:261.63, D4:293.66, E4:329.63, F4:349.23, G4:392,  A4:440,  B4:493.88,
+    C5:523.25, D5:587.33, E5:659.25, F5:698.46, G5:783.99,A5:880,  B5:987.77,
+    C6:1046.5,
+    Cs4:277.18, Ds4:311.13, Fs4:369.99, Gs4:415.3, As4:466.16,
+    Cs5:554.37, Ds5:622.25, Fs5:739.99, Gs5:830.61, As5:932.33,
+  };
+  var R = 0;
+
+  var tracks = [
+    {
+      name: 'PIXEL KEEP THEME',
+      bpm: 140,
+      // melody: array of [freq, duration_in_16ths]
+      melody: [
+        [NOTE.E5,2],[NOTE.E5,2],[R,2],[NOTE.E5,2],
+        [R,2],[NOTE.C5,2],[NOTE.E5,2],[NOTE.G5,4],
+        [R,4],[NOTE.G4,4],[R,4],
+        [NOTE.C5,3],[NOTE.G4,1],[R,2],[NOTE.E4,3],
+        [NOTE.A4,2],[NOTE.B4,2],[NOTE.As4,2],[NOTE.A4,2],
+        [NOTE.G4,2],[NOTE.E5,2],[NOTE.G5,2],[NOTE.A5,2],
+        [NOTE.F5,2],[NOTE.G5,2],[R,2],[NOTE.E5,2],
+        [NOTE.C5,2],[NOTE.D5,2],[NOTE.B4,4],
+      ],
+      bass: [
+        [NOTE.C3,4],[NOTE.C3,4],[NOTE.G3,4],[NOTE.G3,4],
+        [NOTE.A3,4],[NOTE.A3,4],[NOTE.F3,4],[NOTE.F3,4],
+        [NOTE.C3,4],[NOTE.G3,4],[NOTE.A3,4],[NOTE.F3,4],
+        [NOTE.C3,4],[NOTE.G3,4],[NOTE.A3,4],[NOTE.F3,4],
+      ],
+      drums: [1,0,0,0, 1,0,1,0, 1,0,0,0, 1,0,1,0,
+              1,0,0,0, 1,0,1,0, 1,0,0,0, 1,0,1,1],
+      hihat:[1,1,1,1, 1,1,1,1, 1,1,1,1, 1,1,1,1,
+             1,1,1,1, 1,1,1,1, 1,1,1,1, 1,1,1,1],
+    },
+    {
+      name: 'DUNGEON QUEST',
+      bpm: 120,
+      melody: [
+        [NOTE.A4,2],[NOTE.A4,2],[NOTE.C5,2],[NOTE.A4,2],
+        [NOTE.G4,4],[NOTE.F4,4],
+        [NOTE.E4,2],[NOTE.F4,2],[NOTE.G4,2],[NOTE.A4,2],
+        [NOTE.A4,6],[R,2],
+        [NOTE.G4,2],[NOTE.G4,2],[NOTE.B4,2],[NOTE.G4,2],
+        [NOTE.F4,4],[NOTE.E4,4],
+        [NOTE.D4,2],[NOTE.E4,2],[NOTE.F4,2],[NOTE.G4,2],
+        [NOTE.E4,6],[R,2],
+        [NOTE.A4,2],[NOTE.C5,2],[NOTE.E5,2],[NOTE.D5,2],
+        [NOTE.C5,4],[NOTE.A4,4],
+        [NOTE.G4,2],[NOTE.A4,2],[NOTE.B4,2],[NOTE.C5,2],
+        [NOTE.A4,8],
+      ],
+      bass: [
+        [NOTE.A3,4],[NOTE.E3,4],[NOTE.F3,4],[NOTE.C3,4],
+        [NOTE.G3,4],[NOTE.D3,4],[NOTE.E3,4],[NOTE.A3,4],
+        [NOTE.A3,4],[NOTE.E3,4],[NOTE.F3,4],[NOTE.C3,4],
+        [NOTE.G3,4],[NOTE.D3,4],[NOTE.E3,8],
+      ],
+      drums: [1,0,0,0, 0,0,1,0, 1,0,0,0, 0,0,1,0,
+              1,0,0,0, 0,0,1,0, 1,0,0,0, 0,1,1,0],
+      hihat:[1,0,1,0, 1,0,1,0, 1,0,1,0, 1,0,1,0,
+             1,0,1,0, 1,0,1,0, 1,0,1,0, 1,0,1,0],
+    },
+    {
+      name: 'OVERWORLD RUSH',
+      bpm: 160,
+      melody: [
+        [NOTE.G5,1],[NOTE.G5,1],[R,1],[NOTE.G5,1],[R,1],[NOTE.C5,1],[NOTE.G5,2],
+        [R,2],[NOTE.E5,2],[R,2],[NOTE.A5,2],
+        [NOTE.B5,2],[NOTE.As5||NOTE.A5,2],[NOTE.A5,2],[NOTE.Gs5||NOTE.G5,2],
+        [NOTE.G5,2],[NOTE.E5,2],[NOTE.G5,2],[NOTE.A5,2],
+        [NOTE.F5,2],[NOTE.G5,2],[R,2],[NOTE.E5,2],
+        [NOTE.C5,2],[NOTE.D5,2],[NOTE.B4,4],
+        [NOTE.C5,2],[NOTE.C5,2],[NOTE.C5,2],[NOTE.D5,2],
+        [NOTE.E5,2],[NOTE.C5,2],[NOTE.A4,2],[NOTE.G4,4],
+      ],
+      bass: [
+        [NOTE.C3,2],[NOTE.E3,2],[NOTE.G3,2],[NOTE.C4,2],
+        [NOTE.F3,2],[NOTE.A3,2],[NOTE.C4,2],[NOTE.F4,2],
+        [NOTE.G3,2],[NOTE.B3,2],[NOTE.D4,2],[NOTE.G4,2],
+        [NOTE.C3,2],[NOTE.E3,2],[NOTE.G3,2],[NOTE.C4,2],
+        [NOTE.F3,4],[NOTE.G3,4],[NOTE.C3,4],[NOTE.G3,4],
+        [NOTE.F3,4],[NOTE.G3,4],[NOTE.C3,8],
+      ],
+      drums: [1,0,1,0, 1,0,1,0, 1,0,1,0, 1,1,1,0,
+              1,0,1,0, 1,0,1,0, 1,0,1,0, 1,0,1,1],
+      hihat:[1,1,1,1, 1,1,1,1, 1,1,1,1, 1,1,1,1,
+             1,1,1,1, 1,1,1,1, 1,1,1,1, 1,1,1,1],
+    },
+  ];
+
+  // ── Sequencer state ────────────────────────
+  var melodyIdx = 0, bassIdx = 0, drumStep = 0;
+  var melodyTime = 0, bassTime = 0;
+
+  function secondsPer16th() {
+    var bpm = tracks[currentTrack].bpm;
+    return (60 / bpm) / 4;
+  }
+
+  // ── Oscillator helpers ─────────────────────
+  function playSquare(freq, startTime, dur, vol, detune) {
+    if (!freq) return;
+    var osc  = ctx.createOscillator();
+    var gain = ctx.createGain();
+    osc.type = 'square';
+    osc.frequency.value = freq;
+    if (detune) osc.detune.value = detune;
+    gain.gain.setValueAtTime(0, startTime);
+    gain.gain.linearRampToValueAtTime(vol, startTime + 0.005);
+    gain.gain.setValueAtTime(vol, startTime + dur - 0.01);
+    gain.gain.linearRampToValueAtTime(0, startTime + dur);
+    osc.connect(gain);
+    gain.connect(masterGain);
+    osc.start(startTime);
+    osc.stop(startTime + dur + 0.02);
+    activeNodes.push(osc);
+  }
+
+  function playTriangle(freq, startTime, dur, vol) {
+    if (!freq) return;
+    var osc  = ctx.createOscillator();
+    var gain = ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(vol, startTime);
+    gain.gain.linearRampToValueAtTime(0, startTime + dur);
+    osc.connect(gain);
+    gain.connect(masterGain);
+    osc.start(startTime);
+    osc.stop(startTime + dur + 0.02);
+    activeNodes.push(osc);
+  }
+
+  function playNoise(startTime, dur, vol, freq) {
+    // Kick: pitched noise burst
+    var osc  = ctx.createOscillator();
+    var gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(freq||200, startTime);
+    osc.frequency.exponentialRampToValueAtTime(30, startTime + dur);
+    gain.gain.setValueAtTime(vol, startTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, startTime + dur);
+    osc.connect(gain);
+    gain.connect(masterGain);
+    osc.start(startTime);
+    osc.stop(startTime + dur + 0.02);
+    activeNodes.push(osc);
+  }
+
+  function playHihat(startTime, vol) {
+    var bufSize = ctx.sampleRate * 0.04;
+    var buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+    var data = buf.getChannelData(0);
+    for (var i = 0; i < bufSize; i++) data[i] = Math.random() * 2 - 1;
+    var src  = ctx.createBufferSource();
+    var filt = ctx.createBiquadFilter();
+    var gain = ctx.createGain();
+    filt.type = 'highpass';
+    filt.frequency.value = 7000;
+    src.buffer = buf;
+    gain.gain.setValueAtTime(vol, startTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, startTime + 0.04);
+    src.connect(filt);
+    filt.connect(gain);
+    gain.connect(masterGain);
+    src.start(startTime);
+    activeNodes.push(src);
+  }
+
+  // ── Scheduler ──────────────────────────────
+  function schedule() {
+    if (!isPlaying) return;
+    var t  = tracks[currentTrack];
+    var s16 = secondsPer16th();
+
+    while (nextNoteTime < ctx.currentTime + scheduleAhead) {
+
+      // — Melody —
+      var mn = t.melody[melodyIdx % t.melody.length];
+      var mFreq = mn[0], mDur = mn[1];
+      playSquare(mFreq, nextNoteTime, s16 * mDur * 0.85, 0.18);
+      // Harmony (octave below, softer)
+      if (mFreq) playSquare(mFreq/2, nextNoteTime, s16 * mDur * 0.7, 0.06, -7);
+
+      melodyTime += mDur;
+      melodyIdx++;
+
+      // — Bass —
+      if (bassTime <= melodyTime - mDur + 0.01) {
+        var bn = t.bass[bassIdx % t.bass.length];
+        playTriangle(bn[0], nextNoteTime, s16 * bn[1] * 0.9, 0.22);
+        bassTime += bn[1];
+        bassIdx++;
+      }
+
+      // — Drums —
+      var ds = drumStep % t.drums.length;
+      if (t.drums[ds]) playNoise(nextNoteTime, 0.12, 0.3, 120);
+      if (t.hihat[ds]) playHihat(nextNoteTime, 0.06);
+      drumStep++;
+
+      nextNoteTime += s16 * mDur;
+    }
+
+    // Clean up stopped nodes
+    activeNodes = activeNodes.filter(function(n) {
+      try { return n.playbackState !== n.FINISHED_STATE; } catch(e) { return true; }
+    });
+  }
+
+  function startScheduler() {
+    if (schedulerTimer) clearInterval(schedulerTimer);
+    schedulerTimer = setInterval(schedule, intervalMs);
+  }
+  function stopScheduler() {
+    if (schedulerTimer) clearInterval(schedulerTimer);
+    schedulerTimer = null;
+    activeNodes.forEach(function(n){ try { n.stop(); } catch(e){} });
+    activeNodes = [];
+  }
+
+  function resetSequencer() {
+    melodyIdx = 0; bassIdx = 0; drumStep = 0;
+    melodyTime = 0; bassTime = 0;
+  }
+
+  // ── Public controls ────────────────────────
+  function initAudio() {
+    if (ctx) return;
+    ctx = new AudioCtx();
+    masterGain = ctx.createGain();
+    masterGain.gain.value = 0.4;
+    masterGain.connect(ctx.destination);
+  }
+
+  function playMusic() {
+    initAudio();
+    if (ctx.state === 'suspended') ctx.resume();
+    isPlaying = true;
+    resetSequencer();
+    nextNoteTime = ctx.currentTime + 0.1;
+    startScheduler();
+    updateMusicUI();
+  }
+
+  function pauseMusic() {
+    isPlaying = false;
+    stopScheduler();
+    updateMusicUI();
+  }
+
+  function toggleMusic() {
+    if (isPlaying) pauseMusic(); else playMusic();
+  }
+
+  function nextTrack() {
+    currentTrack = (currentTrack + 1) % tracks.length;
+    if (isPlaying) { pauseMusic(); playMusic(); }
+    updateMusicUI();
+  }
+
+  function prevTrack() {
+    currentTrack = (currentTrack - 1 + tracks.length) % tracks.length;
+    if (isPlaying) { pauseMusic(); playMusic(); }
+    updateMusicUI();
+  }
+
+  function updateMusicUI() {
+    var btn  = document.getElementById('music-toggle');
+    var name = document.getElementById('music-track-name');
+    var bar  = document.getElementById('music-bar');
+    var note = document.getElementById('music-note');
+    if (btn)  btn.textContent  = isPlaying ? '\u23F8' : '\u25B6';
+    if (name) name.textContent = tracks[currentTrack].name;
+    if (bar) {
+      bar.classList.toggle('playing', isPlaying);
+      bar.classList.toggle('paused',  !isPlaying);
+    }
+  }
+
+  // Wire up buttons
+  var toggleBtn = document.getElementById('music-toggle');
+  var prevBtn   = document.getElementById('music-prev');
+  var nextBtn   = document.getElementById('music-next');
+  var volSlider = document.getElementById('music-vol');
+
+  if (toggleBtn) {
+    toggleBtn.onclick = function() { toggleMusic(); };
+  }
+  if (prevBtn)   prevBtn.onclick   = function() { prevTrack(); };
+  if (nextBtn)   nextBtn.onclick   = function() { nextTrack(); };
+  if (volSlider) {
+    volSlider.oninput = function() {
+      if (masterGain) masterGain.gain.value = parseFloat(this.value);
+    };
+  }
+
+  // Auto-play when user first interacts with page (browser policy)
+  var autoStarted = false;
+  function tryAutoPlay() {
+    if (autoStarted) return;
+    autoStarted = true;
+    playMusic();
+    document.removeEventListener('click',     tryAutoPlay);
+    document.removeEventListener('keydown',   tryAutoPlay);
+    document.removeEventListener('touchstart',tryAutoPlay);
+  }
+  document.addEventListener('click',     tryAutoPlay);
+  document.addEventListener('keydown',   tryAutoPlay);
+  document.addEventListener('touchstart',tryAutoPlay);
+
+  // Pause when user navigates away from home page
+  var origShowPage = window.showPage;
+  window.showPage = function(id) {
+    if (id !== 'home' && isPlaying) pauseMusic();
+    if (id === 'home' && !isPlaying && autoStarted) playMusic();
+    origShowPage(id);
+  };
+
+  updateMusicUI();
+
+})();
+
+
+// ══════════════════════════════════════════════
+//  RECENTLY PLAYED
+// ══════════════════════════════════════════════
+(function() {
+
+  var MAX_RECENT = 6;
+  var RECENT_KEY = 'pk_recent';
+
+  function getRecent() {
+    try { return JSON.parse(localStorage.getItem(RECENT_KEY) || '[]'); } catch(e) { return []; }
+  }
+
+  function saveRecent(list) {
+    try { localStorage.setItem(RECENT_KEY, JSON.stringify(list)); } catch(e) {}
+  }
+
+  function addRecent(game) {
+    var list = getRecent();
+    // Remove if already exists
+    list = list.filter(function(r){ return r.id !== game.id; });
+    list.unshift({
+      id:     game.id,
+      name:   game.name,
+      system: game.system,
+      playedAt: Date.now()
+    });
+    if (list.length > MAX_RECENT) list = list.slice(0, MAX_RECENT);
+    saveRecent(list);
+    renderRecent();
+  }
+
+  function timeAgo(ts) {
+    var diff = Math.floor((Date.now() - ts) / 1000);
+    if (diff < 60)   return 'JUST NOW';
+    if (diff < 3600) return Math.floor(diff/60) + ' MIN AGO';
+    if (diff < 86400)return Math.floor(diff/3600) + ' HRS AGO';
+    return Math.floor(diff/86400) + ' DAYS AGO';
+  }
+
+  var SYS_COLORS = {
+    nes: '#e83030', snes: '#7038f8', gb: '#38a838', gba: '#0878c8'
+  };
+
+  function renderRecent() {
+    var section = document.getElementById('recent-section');
+    var grid    = document.getElementById('recent-grid');
+    if (!section || !grid) return;
+
+    var list = getRecent();
+    // Filter to only games that still exist in library
+    var lib = [];
+    try { lib = JSON.parse(localStorage.getItem('pk_library') || '[]'); } catch(e) {}
+    var libIds = lib.map(function(g){ return g.id; });
+    list = list.filter(function(r){ return libIds.indexOf(r.id) !== -1; });
+    saveRecent(list); // clean up stale entries
+
+    if (list.length === 0) {
+      section.style.display = 'none';
+      return;
+    }
+
+    section.style.display = 'block';
+    grid.innerHTML = '';
+
+    list.forEach(function(r) {
+      var col = SYS_COLORS[r.system] || '#6b88fc';
+      var card = document.createElement('div');
+      card.className = 'recent-card';
+      card.innerHTML =
+        '<span class="recent-sys" style="color:' + col + ';border-color:' + col + '">' + (r.system||'?').toUpperCase() + '</span>' +
+        '<div class="recent-name">' + r.name + '</div>' +
+        '<div class="recent-time">' + timeAgo(r.playedAt) + '</div>' +
+        '<button class="recent-play">&#9654; PLAY</button>';
+
+      var rid = r.id;
+      card.onclick = function() { window.launchGameById && window.launchGameById(rid); };
+      card.querySelector('.recent-play').onclick = function(e) {
+        e.stopPropagation();
+        window.launchGameById && window.launchGameById(rid);
+      };
+      grid.appendChild(card);
+    });
+  }
+
+  // Expose so launchGame can call it
+  window.addRecentGame = addRecent;
+  window.renderRecentGames = renderRecent;
+
+  // Initial render
+  renderRecent();
 
 })();
